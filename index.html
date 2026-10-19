@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Minesweeper</title>
+<style>
+  :root{
+    --bg:#cfcfcf;
+    --board-bg:#d6d6d6;
+    --cell-size:30px;
+  }
+  html,body{height:100%;margin:0;background:var(--bg);font-family:Segoe UI, Roboto, Arial, sans-serif;display:flex;align-items:center;justify-content:center;}
+  .container{width:100%;max-width:1100px;padding:18px;box-sizing:border-box;display:flex;gap:18px;align-items:flex-start;}
+  .left{flex:1;display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .title{font-size:24px;font-weight:700;margin:0;color:#111;}
+  .toolbar{display:flex;gap:8px;align-items:center;}
+  .led{background:#000;color:#ff2a2a;font-family:monospace;padding:6px 8px;border-radius:4px;min-width:56px;text-align:center;font-weight:700;}
+  .reset{padding:6px 8px;border-radius:6px;border:1px solid #999;background:#eee;cursor:pointer;}
+  .board-wrap{background:var(--board-bg);padding:8px;border:2px solid #8a8a8a;border-radius:6px;}
+  #board{display:grid;gap:0;padding:4px;background:linear-gradient(#d0d0d0,#e6e6e6);border-radius:4px;}
+  .cell{width:var(--cell-size);height:var(--cell-size);display:grid;place-items:center;background:linear-gradient(#eee,#cfcfcf);border-top:2px solid #fff;border-left:2px solid #fff;border-right:2px solid #9a9a9a;border-bottom:2px solid #9a9a9a;cursor:pointer;user-select:none;font-weight:700;font-size:16px;}
+  .cell.revealed{background:#dcdcdc;border:1px solid #7a7a7a;cursor:default;box-shadow:none;}
+  .cell.revealed[data-num="1"]{color:#0000ff;}
+  .cell.revealed[data-num="2"]{color:#007a00;}
+  .cell.revealed[data-num="3"]{color:#ff0000;}
+  .cell.revealed[data-num="4"]{color:#000084;}
+  .cell.revealed[data-num="5"]{color:#7a0000;}
+  .cell.revealed[data-num="6"]{color:#008b8b;}
+  .cell.revealed[data-num="7"]{color:#000000;}
+  .cell.revealed[data-num="8"]{color:#808080;}
+  .flag{color:#d40000;font-size:18px;}
+  .mine{font-size:18px;}
+  .right{width:320px;min-width:240px;background:#f5f5f5;padding:12px;border-radius:8px;border:1px solid #ddd;height:fit-content;}
+  .lb-title{font-weight:700;margin:0 0 8px 0;color:#222;}
+  .lb-list{list-style:none;padding:0;margin:0;max-height:360px;overflow:auto;}
+  .lb-item{display:flex;justify-content:space-between;padding:6px 8px;border-bottom:1px solid #e6e6e6;background:white;border-radius:4px;margin-bottom:6px;}
+  .controls{display:flex;gap:8px;align-items:center;}
+  @media (max-width:980px){
+    .container{flex-direction:column;align-items:center;}
+    .right{width:100%;max-width:520px;}
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="left">
+    <div style="display:flex;align-items:center;gap:16px;">
+      <h1 class="title">Minesweeper</h1>
+      <div class="controls">
+        <label for="difficulty">Mode</label>
+        <select id="difficulty" aria-label="Difficulty">
+          <option value="beginner">Beginner (9×9, 10)</option>
+          <option value="intermediate">Intermediate (16×16, 40)</option>
+          <option value="expert">Expert (30×16, 99)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div id="mineCount" class="led" aria-live="polite">000</div>
+      <button id="reset" class="reset" title="Reset game">Reset</button>
+      <div id="timer" class="led" aria-live="polite">000</div>
+    </div>
+
+    <div class="board-wrap" id="boardWrap" style="margin-top:6px;">
+      <div id="board"></div>
+    </div>
+  </div>
+
+  <aside class="right" aria-label="Leaderboard and info">
+    <div>
+      <h2 class="lb-title">Player</h2>
+      <p id="playerInfo" style="margin:6px 0;font-size:13px;color:#333;">Username: <strong id="playerName">NOTSET</strong></p>
+      <h3 class="lb-title">Top 3 — Wins (<span id="lbMode">Beginner</span>)</h3>
+      <ol id="leaderboard" class="lb-list"></ol>
+      <p style="margin-top:8px;font-size:12px;color:#666;">Wins are stored globally in the online leaderboard and your chosen name is remembered in this browser only. Username is permanent for this browser.</p>
+    </div>
+  </aside>
+</div>
+
+<script>
+/* === CONFIG === */
+const BIN_ID = '68fbf990d0ea881f40b95073';
+const BIN_URL_BASE = `https://api.jsonbin.io/v3/b/${BIN_ID}`;
+const MASTER_KEY = '$2a$10$zrXYVfVMwoTxl34S8AKWOe5iVSct30X1YooEMIQ6BRelnsY45azXW'; // keep private
+
+/* === DIFFICULTIES === */
+const DIFFS = {
+  beginner: {rows:9, cols:9, mines:10, label:'Beginner'},
+  intermediate: {rows:16, cols:16, mines:40, label:'Intermediate'},
+  expert: {rows:16, cols:30, mines:99, label:'Expert'}
+};
+
+let config = {...DIFFS.beginner};
+let grid = [];
+let firstClick = true;
+let interval = null;
+let seconds = 0;
+let remainingFlags = 0;
+let gameOver = false;
+
+const boardEl = document.getElementById('board');
+const resetBtn = document.getElementById('reset');
+const mineCountEl = document.getElementById('mineCount');
+const timerEl = document.getElementById('timer');
+const difficultySel = document.getElementById('difficulty');
+const leaderboardEl = document.getElementById('leaderboard');
+const lbModeEl = document.getElementById('lbMode');
+const playerNameEl = document.getElementById('playerName');
+
+const myNameKey = 'ms_username';
+
+/* === JSONBin helpers (original single-array format) === */
+function defaultStructure(){ return { beginner: [], intermediate: [], expert: [] }; }
+
+async function fetchGlobal(){
+  const url = BIN_URL_BASE + '/latest';
+  try{
+    let resp = await fetch(url);
+    if(resp.status === 401 || resp.status === 403){
+      resp = await fetch(url, { headers: { 'X-Master-Key': MASTER_KEY } });
+    }
+    if(!resp.ok) throw new Error('Fetch failed: ' + resp.status);
+    const body = await resp.json();
+    return body.record ? body.record : body;
+  }catch(err){
+    console.error('fetchGlobal error', err);
+    return defaultStructure();
+  }
+}
+
+async function putGlobal(obj){
+  const url = BIN_URL_BASE;
+  const resp = await fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Master-Key': MASTER_KEY },
+    body: JSON.stringify(obj)
+  });
+  if(!resp.ok){
+    const txt = await resp.text();
+    throw new Error('Put failed: ' + resp.status + ' ' + txt);
+  }
+  return await resp.json();
+}
+
+/* === Leaderboard rendering (top 3) === */
+function topN(arr,n,cmp){ return arr.slice().sort(cmp).slice(0,n); }
+
+function renderLeaderboardFrom(obj){
+  const diffKey = difficultySel.value;
+  lbModeEl.textContent = DIFFS[diffKey].label;
+  const arr = obj[diffKey] ? obj[diffKey].slice() : [];
+  const top = topN(arr,3,(a,b)=> (b.wins||0)-(a.wins||0) || a.name.localeCompare(b.name));
+  leaderboardEl.innerHTML = '';
+  if(top.length===0){
+    const li = document.createElement('li'); li.className='lb-item'; li.textContent='No entries yet.'; leaderboardEl.appendChild(li); return;
+  }
+  top.forEach((e,idx)=>{
+    const li = document.createElement('li'); li.className='lb-item';
+    li.innerHTML = `<span>${idx+1}. ${e.name}</span><span>${e.wins}</span>`;
+    leaderboardEl.appendChild(li);
+  });
+}
+
+/* === Player display === */
+function updatePlayerDisplay(){
+  const saved = localStorage.getItem(myNameKey);
+  playerNameEl.textContent = saved ? saved : 'NOTSET';
+}
+
+/* === Refresh === */
+async function refresh(){
+  const obj = await fetchGlobal();
+  renderLeaderboardFrom(obj);
+  updatePlayerDisplay();
+  return obj;
+}
+
+/* === Record win (single-array format) === */
+async function recordWin(diffKey, name){
+  const obj = await fetchGlobal();
+  const full = Object.assign(defaultStructure(), obj);
+  full[diffKey] = full[diffKey] || [];
+  const idx = full[diffKey].findIndex(e => e.name.toLowerCase() === name.toLowerCase());
+  if(idx === -1){
+    full[diffKey].push({ name: name, wins: 1 });
+  } else {
+    full[diffKey][idx].wins = (full[diffKey][idx].wins || 0) + 1;
+  }
+  full[diffKey] = full[diffKey].slice().sort((a,b)=> (b.wins||0)-(a.wins||0) || a.name.localeCompare(b.name)).slice(0,200);
+  await putGlobal(full);
+  return full;
+}
+
+/* === Game logic === */
+function updateCounters(){ mineCountEl.textContent = String(Math.max(0, remainingFlags)).padStart(3,'0'); timerEl.textContent = String(seconds).padStart(3,'0'); }
+
+function applyDiff(diff){
+  config = {...DIFFS[diff]};
+  firstClick = true; seconds = 0; clearInterval(interval); interval = null; gameOver=false;
+  remainingFlags = config.mines;
+  updateCounters();
+  buildGrid();
+  renderBoard();
+  renderLeaderboardLocal();
+  refresh();
+}
+
+function buildGrid(){ grid = new Array(config.rows * config.cols).fill(0).map(()=>({mine:false, revealed:false, flagged:false, adjacent:0})); }
+
+function idx(r,c){ return r*config.cols + c; }
+function inBounds(r,c){ return r>=0 && c>=0 && r<config.rows && c<config.cols; }
+function neighbors(i){ const r=Math.floor(i/config.cols), c=i%config.cols; const out=[]; for(let dr=-1;dr<=1;dr++) for(let dc=-1;dc<=1;dc++){ if(dr===0 && dc===0) continue; const nr=r+dr,nc=c+dc; if(inBounds(nr,nc)) out.push(idx(nr,nc)); } return out; }
+
+function placeMines(safeIndex){
+  let placed=0; const total = config.rows*config.cols;
+  while(placed < config.mines){
+    const i = Math.floor(Math.random()*total);
+    if(i===safeIndex) continue;
+    if(grid[i].mine) continue;
+    const safeN = neighbors(safeIndex);
+    if(safeN.includes(i)) continue;
+    grid[i].mine = true; placed++;
+  }
+  for(let r=0;r<config.rows;r++) for(let c=0;c<config.cols;c++){
+    const i = idx(r,c);
+    if(grid[i].mine){ grid[i].adjacent=-1; continue; }
+    let cnt=0; for(const n of neighbors(i)) if(grid[n].mine) cnt++; grid[i].adjacent = cnt;
+  }
+}
+
+function renderBoard(){
+  boardEl.innerHTML = '';
+  boardEl.style.gridTemplateColumns = `repeat(${config.cols}, var(--cell-size))`;
+  boardEl.style.gridTemplateRows = `repeat(${config.rows}, var(--cell-size))`;
+  for(let r=0;r<config.rows;r++){
+    for(let c=0;c<config.cols;c++){
+      const i = idx(r,c);
+      const btn = document.createElement('button');
+      btn.className = 'cell';
+      btn.dataset.index = i;
+      btn.addEventListener('click', onCellClick);
+      btn.addEventListener('contextmenu', onCellRightClick);
+      let tTimeout = null;
+      btn.addEventListener('touchstart', ()=>{ tTimeout = setTimeout(()=>{ toggleFlag(i); tTimeout=null; }, 500); }, {passive:true});
+      btn.addEventListener('touchend', ()=>{ if(tTimeout){ clearTimeout(tTimeout); tTimeout=null; } });
+      boardEl.appendChild(btn);
+    }
+  }
+  requestAnimationFrame(()=>{ const maxW = Math.min(720, window.innerWidth - 420); const maxH = window.innerHeight * 0.7; const cellByW = Math.floor((maxW) / config.cols) || 24; const cellByH = Math.floor((maxH) / config.rows) || 24; const size = Math.max(18, Math.min(cellByW, cellByH, 44)); document.documentElement.style.setProperty('--cell-size', size + 'px'); });
+}
+
+function onCellClick(e){
+  if(gameOver) return;
+  const i = parseInt(this.dataset.index,10);
+  if(grid[i].flagged || grid[i].revealed) return;
+  if(firstClick){
+    placeMines(i);
+    startTimer();
+    firstClick = false;
+  }
+  reveal(i);
+  checkWin();
+}
+
+function onCellRightClick(e){
+  e.preventDefault();
+  if(gameOver) return;
+  const i = parseInt(this.dataset.index,10);
+  toggleFlag(i);
+  return false;
+}
+
+function toggleFlag(i){
+  if(grid[i].revealed) return;
+  grid[i].flagged = !grid[i].flagged;
+  const btn = boardEl.querySelector(`[data-index="${i}"]`);
+  if(grid[i].flagged){ btn.innerHTML = '<span class="flag">🚩</span>'; remainingFlags--; }
+  else { btn.innerHTML = ''; remainingFlags++; }
+  updateCounters();
+}
+
+function reveal(i){
+  if(grid[i].revealed || grid[i].flagged) return;
+  grid[i].revealed = true;
+  const btn = boardEl.querySelector(`[data-index="${i}"]`);
+  btn.classList.add('revealed');
+  if(grid[i].mine){
+    btn.innerHTML = '<span class="mine">💣</span>';
+    gameOver = true; clearInterval(interval);
+    for(let k=0;k<grid.length;k++) if(grid[k].mine && !grid[k].revealed){
+      const b = boardEl.querySelector(`[data-index="${k}"]`);
+      if(b){ b.classList.add('revealed'); b.innerHTML = '<span class="mine">💣</span>'; }
+    }
+    setTimeout(()=>{ alert('Boom! You hit a mine.'); }, 50);
+    return;
+  }
+  if(grid[i].adjacent > 0){
+    btn.dataset.num = grid[i].adjacent;
+    btn.textContent = grid[i].adjacent;
+    return;
+  }
+  const q=[i];
+  while(q.length){
+    const cur = q.shift();
+    for(const n of neighbors(cur)){
+      if(!grid[n].revealed && !grid[n].flagged){
+        grid[n].revealed = true;
+        const b = boardEl.querySelector(`[data-index="${n}"]`);
+        if(b){ b.classList.add('revealed'); if(grid[n].adjacent>0){ b.dataset.num = grid[n].adjacent; b.textContent = grid[n].adjacent; } else { q.push(n); } }
+      }
+    }
+  }
+}
+
+function checkWin(){
+  let unrevealed = 0;
+  for(let i=0;i<grid.length;i++) if(!grid[i].revealed) unrevealed++;
+  if(unrevealed === config.mines){
+    gameOver = true;
+    clearInterval(interval);
+    for(let i=0;i<grid.length;i++) if(grid[i].mine){
+      const b = boardEl.querySelector(`[data-index="${i}"]`);
+      if(b){ b.innerHTML = '<span class="flag">🚩</span>'; }
+    }
+    setTimeout(()=>{ onWinFlow(); }, 120);
+  }
+}
+
+function startTimer(){ if(interval) return; interval = setInterval(()=>{ seconds++; updateCounters(); }, 1000); }
+
+/* === Win flow === */
+async function onWinFlow(){
+  const diffKey = difficultySel.value;
+  const saved = localStorage.getItem(myNameKey);
+  if(!saved){
+    alert('No username set — cannot record win. Reload the page to set a username.');
+    return;
+  }
+  try{
+    await recordWin(diffKey, saved);
+    alert('Win recorded for ' + saved + '.');
+    await refresh();
+  }catch(err){
+    alert('Error recording win: ' + (err.message || err));
+    console.error(err);
+  }
+}
+
+/* === Initial username prompt (once) === */
+function ensureUsername(){
+  const cur = localStorage.getItem(myNameKey);
+  if(cur && cur.trim().length>0) return;
+  while(true){
+    const name = prompt('Choose a username (1-10 letters/digits). This will be permanent in this browser:','');
+    if(name === null){
+      return;
+    }
+    const trimmed = name.trim();
+    if(!/^[A-Za-z0-9]{1,10}$/.test(trimmed)){
+      alert('Invalid username. Use 1-10 letters or digits only.');
+      continue;
+    }
+    localStorage.setItem(myNameKey, trimmed);
+    updatePlayerDisplay();
+    return;
+  }
+}
+
+/* === UI helpers === */
+function renderLeaderboardLocal(){
+  lbModeEl.textContent = DIFFS[difficultySel.value].label;
+  leaderboardEl.innerHTML = '<li class="lb-item">Loading...</li>';
+  updatePlayerDisplay();
+}
+
+/* === Init and events === */
+difficultySel.addEventListener('change', ()=>{ applyDiff(difficultySel.value); });
+resetBtn.addEventListener('click', ()=>{ applyDiff(difficultySel.value); });
+
+function applyDiffInitial(){ applyDiff(difficultySel.value); }
+ensureUsername();
+applyDiffInitial();
+window.addEventListener('resize', ()=>{ renderBoard(); });
+
+</script>
+</body>
+</html>
